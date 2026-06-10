@@ -1,0 +1,99 @@
+
+## Step 1: Generate Self-Signed Cert
+
+```bash
+openssl req -x509 -nodes -days 365 \
+  -newkey rsa:2048 \
+  -keyout awx.key \
+  -out awx.crt \
+  -subj "/CN=ansible.htfs.local/O=HCLTech" \
+  -addext "subjectAltName=DNS:ansible.htfs.local"
+```
+
+---
+
+## Step 2: Create TLS Secret in the Right Namespace
+
+```bash
+kubectl create secret tls awx-tls \
+  --cert=awx.crt \
+  --key=awx.key \
+  -n awx-prod-cluster
+```
+
+Verify:
+```bash
+kubectl get secret awx-tls -n awx-prod-cluster
+```
+
+---
+
+## Step 3: Create Ingress
+
+```bash
+vi awx-ingress.yaml
+```
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: awx-ingress
+  namespace: awx-prod-cluster
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - ansible.htfs.local
+    secretName: awx-tls
+  rules:
+  - host: ansible.htfs.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: awx-demo-service
+            port:
+              number: 80
+```
+
+```bash
+kubectl apply -f awx-ingress.yaml
+```
+
+---
+
+## Step 4: Verify Ingress Created
+
+```bash
+kubectl get ingress -n awx-prod-cluster
+```
+
+✅ Expected:
+```
+NAME          CLASS   HOSTS               ADDRESS     PORTS     AGE
+awx-ingress   nginx   ansible.htfs.local  127.0.0.1   80, 443   1m
+```
+
+---
+
+## Step 5: Quick End-to-End Test
+
+```bash
+# Test HTTPS (skip cert warning)
+curl -k https://ansible.htfs.local
+
+# Test cert being served
+echo | openssl s_client -connect ansible.htfs.local:443 2>/dev/null \
+  | openssl x509 -noout -subject -dates
+```
+
+---
+
+That's it — 3 resources: cert → secret → ingress. Share the output of Step 4 and we'll confirm it's live.
