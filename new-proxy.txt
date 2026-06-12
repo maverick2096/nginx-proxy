@@ -1,0 +1,95 @@
+Yes, `ansible.htfs.local` will work perfectly for internal access! Since it's a `.local` domain though, **Let's Encrypt won't work** (requires public domain verification). You'll use a **self-signed certificate** instead — browsers will show a warning you can click through, which is totally fine for internal tooling.
+
+---
+
+### Complete setup — Step by step
+
+#### Step 1 — Generate self-signed cert for `ansible.htfs.local`
+
+```bash
+openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+  -keyout awx-tls.key \
+  -out awx-tls.crt \
+  -subj "/CN=ansible.htfs.local/O=HTFS" \
+  -addext "subjectAltName=DNS:ansible.htfs.local"
+```
+
+---
+
+#### Step 2 — Create TLS secret in Kubernetes
+
+```bash
+kubectl create secret tls awx-tls-secret \
+  --cert=awx-tls.crt \
+  --key=awx-tls.key \
+  -n awx-prod-cluster
+```
+
+---
+
+#### Step 3 — Apply the Ingress resource
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: awx-ingress
+  namespace: awx-prod-cluster
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - ansible.htfs.local
+      secretName: awx-tls-secret
+  rules:
+    - host: ansible.htfs.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: awx-demo-service
+                port:
+                  number: 80
+EOF
+```
+
+---
+
+#### Step 4 — Verify
+
+```bash
+# Ingress created and has an address
+kubectl get ingress -n awx-prod-cluster
+
+# Should show ansible.htfs.local with the node IP
+kubectl describe ingress awx-ingress -n awx-prod-cluster
+```
+
+---
+
+#### Step 5 — Test access
+
+```bash
+# From any machine that has the A record resolving
+curl -k https://ansible.htfs.local
+```
+
+Or just open `https://ansible.htfs.local` in your browser — accept the self-signed cert warning and AWX should load.
+
+---
+
+### What the traffic flow looks like
+
+```
+Browser → ansible.htfs.local:443
+    → nginx ingress (MicroK8s node)
+        → awx-demo-service:80 (ClusterIP)
+            → AWX pods
+```
+
+The old `31808` NodePort still exists and works — this Ingress just adds a clean `443` path on top. You can leave 31808 as-is or stop using it.
